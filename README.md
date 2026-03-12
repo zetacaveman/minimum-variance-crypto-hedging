@@ -1,97 +1,119 @@
-# Minimum-Variance Crypto Hedging (Concise)
+# Minimum-Variance Crypto Hedging
 
-This project implements a clean, minimal workflow for hedging BTC spot exposure with BTC futures using the minimum-variance hedge ratio.
+This demo follows the classical **minimum-variance hedging** framework developed in the futures literature by Johnson (1960) and Stein (1961), and given its standard empirical form by Ederington (1979), who uses the hedge ratio
 
-Current scope:
-- Static hedge (ready to run)
-- Dynamic hedge helper (rolling window, ready for extension)
+$$
+h^* = \frac{\operatorname{Cov}(r_s,r_f)}{\operatorname{Var}(r_f)}.
+$$
 
-## Project Layout
+The comparison between **static** and **dynamic** hedge ratios follows the later literature on time-varying hedging, especially Kroner and Sultan (1993) and related work on constant versus time-varying hedge ratios.
+
+For the cryptocurrency setting, relevant applications include Sebastião and Godinho (2020) on Bitcoin futures as hedging instruments, and Deng et al. (2020) on minimum-variance hedging of Bitcoin futures.
+
+## Structure
+Concise BTC spot/futures hedging project with:
+- one compute module
+- one showcase notebook
+- one executive summary
+- data (optional, currently empty)
 
 ```text
 minimum-variance-crypto-hedging/
+├── executive_summary.md
+├── presentation/
+│   └── BTC_Hedging_Presentation.pptx
 ├── data/
 │   ├── raw/
 │   └── processed/
 ├── notebooks/
 │   └── 01_showcase.ipynb
 ├── src/
-│   ├── hedge.py              # core functions (data load, returns, static/dynamic hedge)
-│   └── run_static.py         # executable static hedge script
+│   ├── __init__.py
+│   └── hedge.py      
 ├── requirements.txt
+├── LICENSE
 └── README.md
 ```
 
-## Math Used
+## Executive Summary
 
-With spot return \(r_t^S\) and futures return \(r_t^F\):
+See [executive_summary.md](executive_summary.md) for the presentation-oriented narrative, data period, methodology, and headline results.
 
-- Static minimum-variance hedge ratio:
-  \[
-  h^\* = \frac{\operatorname{Cov}(r^S, r^F)}{\operatorname{Var}(r^F)}
-  \]
+## Math
 
+- Static hedge ratio:
+  $$
+  h^*=\frac{\operatorname{Cov}(r^S,r^F)}{\operatorname{Var}(r^F)}
+  $$
 - Hedged return:
-  \[
-  r_t^P = r_t^S - h^\* r_t^F
-  \]
-
+  $$
+  r_t^P=r_t^S-h_t r_t^F
+  $$
 - Hedge effectiveness:
-  \[
-  HE = 1 - \frac{\operatorname{Var}(r^P)}{\operatorname{Var}(r^S)}
-  \]
+  $$
+  HE=1-\frac{\operatorname{Var}(r^P)}{\operatorname{Var}(r^S)}
+  $$
 
-This is exactly what the static pipeline computes.
+## API (`src/hedge.py`)
 
-## Quick Start
+- `compute_returns(...)` (simple or log returns)
+- `estimate_static_hedge_ratio(...)`
+- `estimate_dynamic_hedge_ratio(...)` (rolling, lagged)
+- `apply_hedge(...)`
+- `compute_naive_hedged_returns(...)`
+- `compute_static_hedged_returns(...)`
+- `compute_dynamic_hedged_returns(...)`
+- `hedge_effectiveness(...)`
+- `build_hedge_comparison(...)` (naive/static/dynamic return series)
 
-1. Install dependencies:
+This module is computation-only and does not fetch data. You can pass returns from any source (Yahoo, exchange API, CSV, database, etc.).
+
+## Minimal Usage
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run static hedge:
+```python
+import pandas as pd
+from src.hedge import (
+    compute_returns,
+    compute_naive_hedged_returns,
+    compute_static_hedged_returns,
+    compute_dynamic_hedged_returns,
+)
 
-```bash
-python src/run_static.py
+# prices must include spot and futures columns from your own source
+prices = pd.read_csv("your_prices.csv", parse_dates=["date"]).set_index("date")
+ret = compute_returns(prices, spot_col="spot", fut_col="fut", method="simple")
+
+r_p_naive = compute_naive_hedged_returns(ret["r_s"], ret["r_f"])
+r_p_static, h_static = compute_static_hedged_returns(ret["r_s"], ret["r_f"])
+r_p_dynamic, h_t = compute_dynamic_hedged_returns(ret["r_s"], ret["r_f"], window=60, lag=1)
 ```
 
-3. Output dataset is saved to:
+## Note on Data
 
-`data/processed/btc_static_hedge_daily.csv`
+`notebooks/01_showcase.ipynb` can still use `yfinance` for convenience, but the library code in `src/` is fully data-source-agnostic.
 
-## Core API (`src/hedge.py`)
+## References
 
-- `download_close(...)`
-- `load_spot_and_futures(...)`
-- `compute_returns(...)`
-- `estimate_static_hedge_ratio(...)`
-- `add_static_hedged_returns(...)`
-- `hedge_effectiveness(...)`
-- `add_dynamic_hedge(...)` (rolling \(h_t\), lagged to avoid look-ahead)
-- `run_static_hedge(...)`
+### Core references
 
-## Dynamic Hedge (Room Left Open)
+- Johnson, L. L. (1960). The theory of hedging and speculation in commodity futures.
+- Stein, J. L. (1961). The simultaneous determination of spot and futures prices.
+- Ederington, L. H. (1979). The hedging performance of the new futures markets.
+- Kavussanos, M. G., and Nomikos, N. K. (2000). Constant vs. time-varying hedge ratios and hedging efficiency in the BIFFEX market.
+- Alexander, C., and Barbosa, A. (2013). The (de)merits of minimum-variance hedging.
 
-`add_dynamic_hedge(df, window=60, lag=1)` is already included.  
-It computes a rolling hedge ratio and dynamic hedged returns:
+### Crypto / Bitcoin-related references
 
-\[
-h_t = \frac{\widehat{\operatorname{Cov}}_{t-W:t-1}(r^S, r^F)}
-{\widehat{\operatorname{Var}}_{t-W:t-1}(r^F)}
-\]
-
-with lag applied so only past information is used.
-
-## Data Note
-
-The example uses Yahoo tickers:
-- Spot: `BTC-USD`
-- Futures: `BTC=F`
-
-`BTC=F` is a front-month futures series, so roll behavior can influence return statistics and hedge estimates.
+- Koutmos, D. (2021). Hedging uncertainty with cryptocurrencies: Is bitcoin your best bet?
+- Wang, P. et al. (2021). Time and frequency dynamics of connectedness and hedging among Bitcoin and traditional hedges.
+- Nekhili, R. (2022). Hedging Bitcoin with conventional assets.
+- Xu, L. (2023). Hedging effectiveness of bitcoin and gold.
+- Joo, Y. C. (2024). Hedging Bitcoin with commodity futures using dynamic hedge ratios.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See `LICENSE`.

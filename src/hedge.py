@@ -1,175 +1,147 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import time
-
+import numpy as np
 import pandas as pd
-import yfinance as yf
+
+__all__ = [
+    "compute_returns",
+    "estimate_static_hedge_ratio",
+    "estimate_dynamic_hedge_ratio",
+    "apply_hedge",
+    "compute_naive_hedged_returns",
+    "compute_static_hedged_returns",
+    "compute_dynamic_hedged_returns",
+    "hedge_effectiveness",
+    "build_hedge_comparison",
+]
 
 
-@dataclass(frozen=True)
-class HedgeSummary:
-    hedge_ratio: float
-    spot_variance: float
-    hedged_variance: float
-    hedge_effectiveness: float
+def _align_two_series(
+    left: pd.Series,
+    right: pd.Series,
+    left_name: str = "left",
+    right_name: str = "right",
+) -> tuple[pd.Series, pd.Series]:
+    aligned = pd.concat([left.rename(left_name), right.rename(right_name)], axis=1).dropna()
+    if aligned.empty:
+        raise ValueError("No overlapping non-null observations between input series")
+    return aligned[left_name], aligned[right_name]
 
 
-def _extract_close(downloaded: pd.DataFrame, ticker: str) -> pd.Series:
-    if downloaded.empty:
-        raise ValueError(f"No data returned for {ticker}")
-
-    if isinstance(downloaded.columns, pd.MultiIndex):
-        if "Close" not in downloaded.columns.get_level_values(0):
-            raise ValueError(f"Close column not found for {ticker}")
-        close = downloaded["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close[ticker] if ticker in close.columns else close.iloc[:, 0]
-    else:
-        if "Close" not in downloaded.columns:
-            raise ValueError(f"Close column not found for {ticker}")
-        close = downloaded["Close"]
-
-    close = pd.to_numeric(close, errors="coerce").dropna()
-    close.name = ticker
-    return close
-
-
-def download_close(
-    ticker: str,
-    start: str = "2021-01-01",
-    end: str = "2026-01-01",
-    interval: str = "1d",
-    max_retries: int = 3,
-    retry_delay: float = 2.0,
+def compute_returns(
+    df: pd.DataFrame,
+    spot_col: str = "spot",
+    fut_col: str = "fut",
+    method: str = "simple",
 ) -> pd.DataFrame:
-    last_error: Exception | None = None
-    for attempt in range(1, max_retries + 1):
-        downloaded = yf.download(
-            ticker,
-            start=start,
-            end=end,
-            interval=interval,
-            auto_adjust=False,
-            progress=False,
-        )
-
-        try:
-            close = _extract_close(downloaded, ticker)
-            return close.to_frame(name=ticker)
-        except ValueError as exc:
-            last_error = exc
-            if attempt < max_retries:
-                time.sleep(retry_delay * attempt)
-
-    raise ValueError(
-        f"Could not download usable close prices for {ticker} after {max_retries} attempts"
-    ) from last_error
-
-
-def load_spot_and_futures(
-    spot_ticker: str = "BTC-USD",
-    futures_ticker: str = "BTC=F",
-    start: str = "2021-01-01",
-    end: str = "2026-01-01",
-) -> pd.DataFrame:
-    spot = download_close(spot_ticker, start=start, end=end).rename(
-        columns={spot_ticker: "spot_close"}
-    )
-    fut = download_close(futures_ticker, start=start, end=end).rename(
-        columns={futures_ticker: "fut_close"}
-    )
-    df = spot.join(fut, how="inner").dropna()
-    df.index = pd.to_datetime(df.index)
-    return df.sort_index()
-
-
-def compute_returns(df: pd.DataFrame) -> pd.DataFrame:
-    required = {"spot_close", "fut_close"}
+    required = {spot_col, fut_col}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     out = df.copy()
-    out["spot_ret"] = out["spot_close"].pct_change()
-    out["fut_ret"] = out["fut_close"].pct_change()
-    return out.dropna(subset=["spot_ret", "fut_ret"])
+    if method == "simple":
+        out["r_s"] = out[spot_col].pct_change()
+        out["r_f"] = out[fut_col].pct_change()
+    elif method == "log":
+        out["r_s"] = np.log(out[spot_col] / out[spot_col].shift(1))
+        out["r_f"] = np.log(out[fut_col] / out[fut_col].shift(1))
+    else:
+        raise ValueError("method must be 'simple' or 'log'")
+
+    return out.dropna(subset=["r_s", "r_f"])
 
 
 def estimate_static_hedge_ratio(spot_ret: pd.Series, fut_ret: pd.Series) -> float:
+    spot_ret, fut_ret = _align_two_series(spot_ret, fut_ret, left_name="r_s", right_name="r_f")
     var_f = fut_ret.var()
     if pd.isna(var_f) or var_f == 0:
         raise ValueError("Cannot estimate hedge ratio: futures return variance is zero")
-    h_star = spot_ret.cov(fut_ret) / var_f
-    return float(h_star)
+    return float(spot_ret.cov(fut_ret) / var_f)
 
 
-def add_static_hedged_returns(df: pd.DataFrame, hedge_ratio: float) -> pd.DataFrame:
-    required = {"spot_ret", "fut_ret"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
-
-    out = df.copy()
-    out["hedged_ret"] = out["spot_ret"] - hedge_ratio * out["fut_ret"]
-    return out
-
-
-def add_dynamic_hedge(
-    df: pd.DataFrame,
+def estimate_dynamic_hedge_ratio(
+    spot_ret: pd.Series,
+    fut_ret: pd.Series,
     window: int = 60,
     lag: int = 1,
-    ratio_col: str = "h_t",
-    output_col: str = "hedged_ret_dyn",
-) -> pd.DataFrame:
-    required = {"spot_ret", "fut_ret"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
+) -> pd.Series:
+    spot_ret, fut_ret = _align_two_series(spot_ret, fut_ret, left_name="r_s", right_name="r_f")
     if window < 2:
         raise ValueError("window must be >= 2")
     if lag < 0:
         raise ValueError("lag must be >= 0")
 
-    out = df.copy()
-    cov_sf = out["spot_ret"].rolling(window).cov(out["fut_ret"])
-    var_f = out["fut_ret"].rolling(window).var()
-    out[ratio_col] = (cov_sf / var_f).shift(lag)
-    out[output_col] = out["spot_ret"] - out[ratio_col] * out["fut_ret"]
-    return out
+    rolling_cov = spot_ret.rolling(window).cov(fut_ret)
+    rolling_var_f = fut_ret.rolling(window).var()
+    hedge_ratio = (rolling_cov / rolling_var_f).replace([np.inf, -np.inf], np.nan)
+    return hedge_ratio.shift(lag)
+
+
+def apply_hedge(
+    spot_ret: pd.Series,
+    fut_ret: pd.Series,
+    hedge_ratio: float | pd.Series,
+) -> pd.Series:
+    spot_ret, fut_ret = _align_two_series(spot_ret, fut_ret, left_name="r_s", right_name="r_f")
+    if isinstance(hedge_ratio, pd.Series):
+        hedge_ratio = hedge_ratio.reindex(spot_ret.index)
+    return spot_ret - hedge_ratio * fut_ret
+
+
+def compute_naive_hedged_returns(
+    spot_ret: pd.Series,
+    fut_ret: pd.Series,
+    hedge_ratio: float = 1.0,
+) -> pd.Series:
+    return apply_hedge(spot_ret, fut_ret, hedge_ratio)
+
+
+def compute_static_hedged_returns(spot_ret: pd.Series, fut_ret: pd.Series) -> tuple[pd.Series, float]:
+    h_static = estimate_static_hedge_ratio(spot_ret, fut_ret)
+    return apply_hedge(spot_ret, fut_ret, h_static), h_static
+
+
+def compute_dynamic_hedged_returns(
+    spot_ret: pd.Series,
+    fut_ret: pd.Series,
+    window: int = 60,
+    lag: int = 1,
+) -> tuple[pd.Series, pd.Series]:
+    h_t = estimate_dynamic_hedge_ratio(spot_ret, fut_ret, window=window, lag=lag)
+    return apply_hedge(spot_ret, fut_ret, h_t), h_t
 
 
 def hedge_effectiveness(spot_ret: pd.Series, hedged_ret: pd.Series) -> float:
+    spot_ret, hedged_ret = _align_two_series(
+        spot_ret,
+        hedged_ret,
+        left_name="r_s",
+        right_name="r_p",
+    )
     var_spot = spot_ret.var()
     if pd.isna(var_spot) or var_spot == 0:
         raise ValueError("Cannot compute hedge effectiveness: spot return variance is zero")
-    he = 1 - (hedged_ret.var() / var_spot)
-    return float(he)
+    return float(1 - hedged_ret.var() / var_spot)
 
 
-def run_static_hedge(
-    spot_ticker: str = "BTC-USD",
-    futures_ticker: str = "BTC=F",
-    start: str = "2021-01-01",
-    end: str = "2026-01-01",
-) -> tuple[pd.DataFrame, HedgeSummary]:
-    df = load_spot_and_futures(
-        spot_ticker=spot_ticker,
-        futures_ticker=futures_ticker,
-        start=start,
-        end=end,
+def build_hedge_comparison(
+    returns_df: pd.DataFrame,
+    window: int = 60,
+    lag: int = 1,
+) -> tuple[pd.DataFrame, float]:
+    required = {"r_s", "r_f"}
+    missing = required - set(returns_df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    out = returns_df.copy()
+    out["r_p_naive"] = compute_naive_hedged_returns(out["r_s"], out["r_f"], hedge_ratio=1.0)
+    out["r_p_static"], h_static = compute_static_hedged_returns(out["r_s"], out["r_f"])
+    out["r_p_dynamic"], out["h_t"] = compute_dynamic_hedged_returns(
+        out["r_s"],
+        out["r_f"],
+        window=window,
+        lag=lag,
     )
-    df = compute_returns(df)
-    h_star = estimate_static_hedge_ratio(df["spot_ret"], df["fut_ret"])
-    df = add_static_hedged_returns(df, h_star)
-
-    spot_var = float(df["spot_ret"].var())
-    hedged_var = float(df["hedged_ret"].var())
-    he = hedge_effectiveness(df["spot_ret"], df["hedged_ret"])
-    summary = HedgeSummary(
-        hedge_ratio=h_star,
-        spot_variance=spot_var,
-        hedged_variance=hedged_var,
-        hedge_effectiveness=he,
-    )
-    return df, summary
+    return out, h_static
