@@ -28,6 +28,22 @@ def _align_two_series(
     return aligned[left_name], aligned[right_name]
 
 
+def _validate_price_columns(df: pd.DataFrame, columns: set[str], method: str) -> None:
+    non_finite = sorted(
+        col for col in columns if not np.isfinite(df[col].dropna().to_numpy()).all()
+    )
+    if non_finite:
+        raise ValueError(f"Price columns contain non-finite values: {non_finite}")
+
+    if method == "log":
+        non_positive = sorted(col for col in columns if (df[col].dropna() <= 0).any())
+        if non_positive:
+            raise ValueError(
+                "Log returns require strictly positive prices in columns: "
+                f"{non_positive}"
+            )
+
+
 def compute_returns(
     df: pd.DataFrame,
     spot_col: str = "spot",
@@ -38,6 +54,10 @@ def compute_returns(
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
+    if method not in {"simple", "log"}:
+        raise ValueError("method must be 'simple' or 'log'")
+
+    _validate_price_columns(df, required, method)
 
     out = df.copy()
     if method == "simple":
@@ -46,8 +66,15 @@ def compute_returns(
     elif method == "log":
         out["r_s"] = np.log(out[spot_col] / out[spot_col].shift(1))
         out["r_f"] = np.log(out[fut_col] / out[fut_col].shift(1))
-    else:
-        raise ValueError("method must be 'simple' or 'log'")
+
+    invalid_returns = sorted(
+        col for col in ("r_s", "r_f") if np.isinf(out[col].dropna().to_numpy()).any()
+    )
+    if invalid_returns:
+        raise ValueError(
+            "Computed returns contain infinite values; check for zero prices in columns: "
+            f"{invalid_returns}"
+        )
 
     return out.dropna(subset=["r_s", "r_f"])
 
