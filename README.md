@@ -3,7 +3,7 @@
 This demo follows the classical **minimum-variance hedging** framework developed in the futures literature by Johnson (1960) and Stein (1961), and given its standard empirical form by Ederington (1979), who uses the hedge ratio
 
 $$
-h^* = \frac{\operatorname{Cov}(r_s,r_f)}{\operatorname{Var}(r_f)}.
+h^* = \frac{\mathrm{Cov}(r_s,r_f)}{\mathrm{Var}(r_f)}.
 $$
 
 The comparison between **static** and **dynamic** hedge ratios follows the later literature on time-varying hedging, especially Kroner and Sultan (1993) and related work on constant versus time-varying hedge ratios.
@@ -33,12 +33,10 @@ These are the first references to look at for the hedge construction used in thi
 Concise BTC spot/futures hedging project with:
 - one compute module
 - one showcase notebook
-- one executive summary, with an optional PDF export
 - one presentation deck
 
 ```text
 minimum-variance-crypto-hedging/
-├── executive_summary.md
 ├── presentation/
 │   └── BTC_Hedging_Presentation.pptx
 ├── notebooks/
@@ -55,15 +53,11 @@ minimum-variance-crypto-hedging/
 
 If you want to persist raw or processed market data, create a local `data/` directory yourself. The reusable code in `src/` does not rely on any bundled dataset.
 
-## Executive Summary
-
-See [executive_summary.md](executive_summary.md) for the presentation-oriented narrative, data period, methodology, and headline results. If you export a PDF version locally, keep it alongside the Markdown file rather than treating it as a required repo artifact.
-
 ## Math
 
 - Static hedge ratio:
   $$
-  h^*=\frac{\operatorname{Cov}(r^S,r^F)}{\operatorname{Var}(r^F)}
+  h^*=\frac{\mathrm{Cov}(r^S,r^F)}{\mathrm{Var}(r^F)}
   $$
 - Hedged return:
   $$
@@ -71,7 +65,7 @@ See [executive_summary.md](executive_summary.md) for the presentation-oriented n
   $$
 - Hedge effectiveness:
   $$
-  HE=1-\frac{\operatorname{Var}(r^P)}{\operatorname{Var}(r^S)}
+  HE=1-\frac{\mathrm{Var}(r^P)}{\mathrm{Var}(r^S)}
   $$
 
 ## API (`src/hedge.py`)
